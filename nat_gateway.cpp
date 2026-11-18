@@ -3,6 +3,7 @@
 #include <unordered_map>
 #include <utility>
 #include <deque>
+#include <vector>
 
 class NatTable {
 public:
@@ -12,7 +13,7 @@ public:
         }
     }
 
-    std::optional<int> translateOutgoing(const std::string& privateIp, int privatePort) {
+    std::optional<int> translateOutgoing(const std::string& privateIp, int privatePort, long long nowMS) {
         // 1. Build the key from ip and port
         // 2. If the key is already in the outgoing map, return its port
         // 3. Otherwise take nextPort_, add 1 to it, and save the
@@ -25,29 +26,38 @@ public:
         if(it == outgoing_table.end()) {
 
             if(ports.empty()) {
-                
+                releaseOld(nowMS);
+                if(ports.empty()) {
+                    return std::nullopt;
+                }
             }
 
-            outgoing_table.try_emplace(temp, ports.front());
-            incoming_table.try_emplace(ports.front(), std::make_pair(privateIp, privatePort));
-            ports.pop_front();
-        }
+            PrivateInfo newInfo = {privateIp, privatePort, nowMS};
 
+            outgoing_table.try_emplace(temp, ports.front());
+            incoming_table.try_emplace(ports.front(), newInfo);
+            ports.pop_front();
+        } else {
+            incoming_table[it->second].lastUsed = nowMS;   
+        }
         return outgoing_table[temp];
     }
 
-    std::optional<std::pair<std::string, int>> translateIncoming(int publicPort) {
+    std::optional<std::pair<std::string, int>> translateIncoming(int publicPort, long long nowMS) {
         // 1. Look up publicPort in the incoming map
         // 2. If it's not there, return std::nullopt
         // 3. Otherwise return the ip and port
 
         auto it = incoming_table.find(publicPort);
 
-        if(it == incoming_table.end()) {
+        if(it == incoming_table.end() || nowMS - it->second.lastUsed >= releaseTime_) {
+            release(publicPort);
             return std::nullopt;
         }
 
-        return incoming_table[publicPort];
+        it->second.lastUsed = nowMS; 
+        PrivateInfo privateinfo = incoming_table[publicPort];
+        return std::make_pair(privateinfo.ip, privateinfo.port);
     }
 
     void release(int publicPort) {
@@ -62,7 +72,7 @@ public:
             auto privateIP = it->second;
 
             incoming_table.erase(it);
-            std::string combinedPrivate = privateIP.first + ":" + std::to_string(privateIP.second);
+            std::string combinedPrivate = privateIP.ip + ":" + std::to_string(privateIP.port);
             outgoing_table.erase(combinedPrivate);
 
             ports.push_back(publicPort);
@@ -73,7 +83,7 @@ public:
         std::vector<int> removeFromTable;
         for(auto& it : incoming_table) {
             if(nowMS - it.second.lastUsed >= releaseTime_) {
-                std::string tempPrivate = it.second.ip + ":" + std::to_string(itsecondport);
+                std::string tempPrivate = it.second.ip + ":" + std::to_string(it.second.port);
                 int publicPort = outgoing_table[tempPrivate];
                 outgoing_table.erase(tempPrivate);
                 removeFromTable.push_back(it.first);
